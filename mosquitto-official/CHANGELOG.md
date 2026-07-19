@@ -1,5 +1,9 @@
 # Änderungsprotokoll
 
+## 1.1.4
+
+- Projektlink auf das eigene GitHub-Repository geändert
+
 ## 1.1.3
 
 - Überschrift der Dokumentation auf `Mosquitto Community Broker` geändert
