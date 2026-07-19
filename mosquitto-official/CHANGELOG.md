@@ -1,5 +1,10 @@
 # Änderungsprotokoll
 
+## 1.1.3
+
+- Überschrift der Dokumentation auf `Mosquitto Community Broker` geändert
+- Darstellung der App vereinheitlicht
+
 ## 1.1.2
 
 - Sichtbaren Namen in `Mosquitto Community Broker` geändert

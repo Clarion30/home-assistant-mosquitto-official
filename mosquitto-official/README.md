@@ -1,4 +1,4 @@
-# Mosquitto Official
+# Mosquitto Community Broker
 
 Lokaler MQTT-Broker für Home Assistant auf Grundlage des offiziellen Eclipse-Mosquitto-Docker-Images.
 
