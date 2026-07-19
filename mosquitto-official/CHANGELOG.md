@@ -1,5 +1,11 @@
 # Änderungsprotokoll
 
+## 1.1.2
+
+- Sichtbaren Namen in `Mosquitto Community Broker` geändert
+- Kennzeichnung als inoffizielle Community-App ergänzt
+- Beschreibung und Dokumentation überarbeitet
+
 ## 1.1.1
 
 - Lokale App-Struktur bereinigt

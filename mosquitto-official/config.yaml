@@ -1,7 +1,7 @@
-name: "Mosquitto Official"
-version: "1.1.1"
+name: Mosquitto Community Broker
+version: "1.1.2"
 slug: "mosquitto_official"
-description: "Eclipse Mosquitto 2.1.2 als lokaler MQTT-Broker für Home Assistant"
+description: Inoffizielle Home-Assistant-App mit dem offiziellen Eclipse-Mosquitto-Docker-Image
 url: "https://mosquitto.org/"
 arch:
   - amd64

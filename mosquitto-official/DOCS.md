@@ -29,3 +29,12 @@ Das reguläre Home-Assistant-Mosquitto-Add-on darf nicht gleichzeitig laufen. Be
 ## Diagnose
 
 Für eine ausführliche Fehlersuche kann vorübergehend `debug: true` gesetzt werden. Nach der Diagnose sollte Debug wieder ausgeschaltet werden.
+
+## Haftungs- und Projekthinweis
+
+Diese App ist ein unabhängiges Community-Projekt und keine offizielle
+App der Eclipse Foundation, des Eclipse-Mosquitto-Projekts oder von
+Home Assistant.
+
+Die Verwendung erfolgt auf eigene Verantwortung. Vor Aktualisierungen
+sollte eine Sicherung der App-Konfiguration vorhanden sein.
