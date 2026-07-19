@@ -49,11 +49,16 @@ jobs:
               url = data.get("next")
 
           if not versions:
-              raise SystemExit("Kein vollständiger Alpine-Versionstag gefunden")
+              raise SystemExit("Kein Mosquitto-Alpine-Versionstag gefunden")
 
           print(".".join(map(str, max(versions))))
           PY
           )"
+
+          if [ -z "$CURRENT_MOSQUITTO" ]; then
+            echo "Aktuelle Mosquitto-Version konnte nicht gelesen werden."
+            exit 1
+          fi
 
           echo "Aktuell: ${CURRENT_MOSQUITTO}"
           echo "Neu:     ${LATEST_MOSQUITTO}"
@@ -69,6 +74,7 @@ jobs:
 
       - name: App-Dateien aktualisieren
         if: steps.versions.outputs.changed == 'true'
+        id: update
         shell: bash
         env:
           OLD_MOSQUITTO: ${{ steps.versions.outputs.current }}
@@ -79,10 +85,17 @@ jobs:
           APP_CONFIG="mosquitto-official/config.yaml"
           DOCKERFILE="mosquitto-official/Dockerfile"
           CHANGELOG="mosquitto-official/CHANGELOG.md"
+          README="mosquitto-official/README.md"
+          DOCS="mosquitto-official/DOCS.md"
 
           CURRENT_APP_VERSION="$(
             sed -nE 's/^version:[[:space:]]*"([^"]+)"/\1/p' "$APP_CONFIG"
           )"
+
+          if [ -z "$CURRENT_APP_VERSION" ]; then
+            echo "App-Version konnte nicht gelesen werden."
+            exit 1
+          fi
 
           IFS=. read -r APP_MAJOR APP_MINOR APP_PATCH <<< "$CURRENT_APP_VERSION"
           NEW_APP_VERSION="${APP_MAJOR}.${APP_MINOR}.$((APP_PATCH + 1))"
@@ -95,8 +108,11 @@ jobs:
             "s|^version:.*$|version: \"${NEW_APP_VERSION}\"|" \
             "$APP_CONFIG"
 
-          TEMPFILE="$(mktemp)"
+          sed -i \
+            "s/Eclipse Mosquitto ${OLD_MOSQUITTO}/Eclipse Mosquitto ${NEW_MOSQUITTO}/g" \
+            "$README" "$DOCS" || true
 
+          TEMPFILE="$(mktemp)"
           {
             echo "# Änderungsprotokoll"
             echo
@@ -104,19 +120,21 @@ jobs:
             echo
             echo "- Eclipse Mosquitto von \`${OLD_MOSQUITTO}\` auf \`${NEW_MOSQUITTO}\` aktualisiert"
             echo "- Offizielles Docker-Image \`eclipse-mosquitto:${NEW_MOSQUITTO}-alpine\` eingebunden"
+            echo "- Home-Assistant-App-Version auf \`${NEW_APP_VERSION}\` erhöht"
             echo
             sed '1{/^# Änderungsprotokoll$/d;}' "$CHANGELOG" | sed '1{/^$/d;}'
           } > "$TEMPFILE"
 
           mv "$TEMPFILE" "$CHANGELOG"
 
-          echo "APP_VERSION=${NEW_APP_VERSION}" >> "$GITHUB_ENV"
+          echo "app_version=${NEW_APP_VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Änderungen speichern
+      - name: Änderungen committen und pushen
         if: steps.versions.outputs.changed == 'true'
         shell: bash
         env:
           NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
+          NEW_APP_VERSION: ${{ steps.update.outputs.app_version }}
         run: |
           set -euo pipefail
 
@@ -126,7 +144,33 @@ jobs:
           git add \
             mosquitto-official/Dockerfile \
             mosquitto-official/config.yaml \
-            mosquitto-official/CHANGELOG.md
+            mosquitto-official/CHANGELOG.md \
+            mosquitto-official/README.md \
+            mosquitto-official/DOCS.md
 
-          git commit -m "Update Mosquitto auf ${NEW_MOSQUITTO}"
+          git commit -m "Mosquitto ${NEW_MOSQUITTO} / App ${NEW_APP_VERSION}"
           git push
+
+      - name: GitHub-Release erstellen
+        if: steps.versions.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
+          NEW_APP_VERSION: ${{ steps.update.outputs.app_version }}
+        run: |
+          set -euo pipefail
+
+          TAG="v${NEW_APP_VERSION}"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create "$TAG" \
+            --title "Mosquitto Community Broker ${NEW_APP_VERSION}" \
+            --notes "Automatisches Update auf Eclipse Mosquitto ${NEW_MOSQUITTO}.
+
+          Änderungen:
+          - Eclipse Mosquitto ${NEW_MOSQUITTO}
+          - Docker-Image eclipse-mosquitto:${NEW_MOSQUITTO}-alpine
+          - Home-Assistant-App-Version ${NEW_APP_VERSION}"
