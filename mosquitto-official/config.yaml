@@ -1,0 +1,22 @@
+name: "Mosquitto Official"
+version: "1.1.1"
+slug: "mosquitto_official"
+description: "Eclipse Mosquitto 2.1.2 als lokaler MQTT-Broker für Home Assistant"
+url: "https://mosquitto.org/"
+arch:
+  - amd64
+startup: services
+boot: auto
+init: false
+host_network: true
+stage: stable
+map:
+  - addon_config:rw
+options:
+  username: mqtt
+  password: ""
+  debug: false
+schema:
+  username: str
+  password: password
+  debug: bool

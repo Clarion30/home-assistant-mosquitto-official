@@ -1,0 +1,132 @@
+name: Check Mosquitto Update
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Neueste Mosquitto-Version ermitteln
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CURRENT_MOSQUITTO="$(
+            sed -nE 's/^FROM eclipse-mosquitto:([0-9]+\.[0-9]+\.[0-9]+)-alpine$/\1/p' \
+              mosquitto-official/Dockerfile
+          )"
+
+          LATEST_MOSQUITTO="$(
+            python3 - <<'PY'
+          import json
+          import re
+          import urllib.request
+
+          url = "https://hub.docker.com/v2/repositories/library/eclipse-mosquitto/tags?page_size=100"
+          versions = set()
+
+          while url:
+              with urllib.request.urlopen(url, timeout=30) as response:
+                  data = json.load(response)
+
+              for item in data.get("results", []):
+                  name = item.get("name", "")
+                  match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)-alpine", name)
+                  if match:
+                      versions.add(tuple(map(int, match.groups())))
+
+              url = data.get("next")
+
+          if not versions:
+              raise SystemExit("Kein vollständiger Alpine-Versionstag gefunden")
+
+          print(".".join(map(str, max(versions))))
+          PY
+          )"
+
+          echo "Aktuell: ${CURRENT_MOSQUITTO}"
+          echo "Neu:     ${LATEST_MOSQUITTO}"
+
+          echo "current=${CURRENT_MOSQUITTO}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST_MOSQUITTO}" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT_MOSQUITTO" = "$LATEST_MOSQUITTO" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: App-Dateien aktualisieren
+        if: steps.versions.outputs.changed == 'true'
+        shell: bash
+        env:
+          OLD_MOSQUITTO: ${{ steps.versions.outputs.current }}
+          NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
+        run: |
+          set -euo pipefail
+
+          APP_CONFIG="mosquitto-official/config.yaml"
+          DOCKERFILE="mosquitto-official/Dockerfile"
+          CHANGELOG="mosquitto-official/CHANGELOG.md"
+
+          CURRENT_APP_VERSION="$(
+            sed -nE 's/^version:[[:space:]]*"([^"]+)"/\1/p' "$APP_CONFIG"
+          )"
+
+          IFS=. read -r APP_MAJOR APP_MINOR APP_PATCH <<< "$CURRENT_APP_VERSION"
+          NEW_APP_VERSION="${APP_MAJOR}.${APP_MINOR}.$((APP_PATCH + 1))"
+
+          sed -i \
+            "s|^FROM eclipse-mosquitto:.*-alpine$|FROM eclipse-mosquitto:${NEW_MOSQUITTO}-alpine|" \
+            "$DOCKERFILE"
+
+          sed -i \
+            "s|^version:.*$|version: \"${NEW_APP_VERSION}\"|" \
+            "$APP_CONFIG"
+
+          TEMPFILE="$(mktemp)"
+
+          {
+            echo "# Änderungsprotokoll"
+            echo
+            echo "## ${NEW_APP_VERSION}"
+            echo
+            echo "- Eclipse Mosquitto von \`${OLD_MOSQUITTO}\` auf \`${NEW_MOSQUITTO}\` aktualisiert"
+            echo "- Offizielles Docker-Image \`eclipse-mosquitto:${NEW_MOSQUITTO}-alpine\` eingebunden"
+            echo
+            sed '1{/^# Änderungsprotokoll$/d;}' "$CHANGELOG" | sed '1{/^$/d;}'
+          } > "$TEMPFILE"
+
+          mv "$TEMPFILE" "$CHANGELOG"
+
+          echo "APP_VERSION=${NEW_APP_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Änderungen speichern
+        if: steps.versions.outputs.changed == 'true'
+        shell: bash
+        env:
+          NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            mosquitto-official/Dockerfile \
+            mosquitto-official/config.yaml \
+            mosquitto-official/CHANGELOG.md
+
+          git commit -m "Update Mosquitto auf ${NEW_MOSQUITTO}"
+          git push
