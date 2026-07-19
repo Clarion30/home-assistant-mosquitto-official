@@ -1,6 +1,7 @@
 ARG BUILD_VERSION
 
 FROM eclipse-mosquitto:2.1.2-alpine
+ARG BUILD_VERSION
 
 LABEL \
   io.hass.name="Mosquitto Official Test" \
