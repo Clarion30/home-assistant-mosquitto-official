@@ -8,13 +8,19 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: mosquitto-update
+  cancel-in-progress: false
+
 jobs:
   check-update:
     runs-on: ubuntu-latest
 
     steps:
       - name: Repository auschecken
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Neueste Mosquitto-Version ermitteln
         id: versions
@@ -23,7 +29,8 @@ jobs:
           set -euo pipefail
 
           CURRENT_MOSQUITTO="$(
-            sed -nE 's/^FROM eclipse-mosquitto:([0-9]+\.[0-9]+\.[0-9]+)-alpine$/\1/p' \
+            sed -nE \
+              's/^FROM eclipse-mosquitto:([0-9]+\.[0-9]+\.[0-9]+)-alpine$/\1/p' \
               mosquitto-official/Dockerfile
           )"
 
@@ -33,11 +40,18 @@ jobs:
           import re
           import urllib.request
 
-          url = "https://hub.docker.com/v2/repositories/library/eclipse-mosquitto/tags?page_size=100"
+          url = (
+              "https://hub.docker.com/v2/repositories/"
+              "library/eclipse-mosquitto/tags?page_size=100"
+          )
           versions = set()
 
           while url:
-              with urllib.request.urlopen(url, timeout=30) as response:
+              request = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "mosquitto-community-broker-updater"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
                   data = json.load(response)
 
               for item in data.get("results", []):
@@ -60,8 +74,8 @@ jobs:
             exit 1
           fi
 
-          echo "Aktuell: ${CURRENT_MOSQUITTO}"
-          echo "Neu:     ${LATEST_MOSQUITTO}"
+          echo "Installiertes Docker-Tag: ${CURRENT_MOSQUITTO}-alpine"
+          echo "Neuestes Docker-Tag:     ${LATEST_MOSQUITTO}-alpine"
 
           echo "current=${CURRENT_MOSQUITTO}" >> "$GITHUB_OUTPUT"
           echo "latest=${LATEST_MOSQUITTO}" >> "$GITHUB_OUTPUT"
@@ -71,6 +85,14 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Neues offizielles Docker-Image prüfen
+        if: steps.versions.outputs.changed == 'true'
+        env:
+          NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
+        run: |
+          set -euo pipefail
+          docker pull "eclipse-mosquitto:${NEW_MOSQUITTO}-alpine"
 
       - name: App-Dateien aktualisieren
         if: steps.versions.outputs.changed == 'true'
@@ -89,7 +111,9 @@ jobs:
           DOCS="mosquitto-official/DOCS.md"
 
           CURRENT_APP_VERSION="$(
-            sed -nE 's/^version:[[:space:]]*"([^"]+)"/\1/p' "$APP_CONFIG"
+            sed -nE \
+              's/^version:[[:space:]]*"([^"]+)"/\1/p' \
+              "$APP_CONFIG"
           )"
 
           if [ -z "$CURRENT_APP_VERSION" ]; then
@@ -97,7 +121,9 @@ jobs:
             exit 1
           fi
 
-          IFS=. read -r APP_MAJOR APP_MINOR APP_PATCH <<< "$CURRENT_APP_VERSION"
+          IFS=. read -r APP_MAJOR APP_MINOR APP_PATCH \
+            <<< "$CURRENT_APP_VERSION"
+
           NEW_APP_VERSION="${APP_MAJOR}.${APP_MINOR}.$((APP_PATCH + 1))"
 
           sed -i \
@@ -110,7 +136,7 @@ jobs:
 
           sed -i \
             "s/Eclipse Mosquitto ${OLD_MOSQUITTO}/Eclipse Mosquitto ${NEW_MOSQUITTO}/g" \
-            "$README" "$DOCS" || true
+            "$README" "$DOCS" "$DOCKERFILE"
 
           TEMPFILE="$(mktemp)"
           {
@@ -119,19 +145,58 @@ jobs:
             echo "## ${NEW_APP_VERSION}"
             echo
             echo "- Eclipse Mosquitto von \`${OLD_MOSQUITTO}\` auf \`${NEW_MOSQUITTO}\` aktualisiert"
-            echo "- Offizielles Docker-Image \`eclipse-mosquitto:${NEW_MOSQUITTO}-alpine\` eingebunden"
+            echo "- Docker-Image \`eclipse-mosquitto:${NEW_MOSQUITTO}-alpine\` erfolgreich geprüft"
             echo "- Home-Assistant-App-Version auf \`${NEW_APP_VERSION}\` erhöht"
             echo
-            sed '1{/^# Änderungsprotokoll$/d;}' "$CHANGELOG" | sed '1{/^$/d;}'
+            sed '1{/^# Änderungsprotokoll$/d;}' "$CHANGELOG" |
+              sed '1{/^$/d;}'
           } > "$TEMPFILE"
 
           mv "$TEMPFILE" "$CHANGELOG"
 
           echo "app_version=${NEW_APP_VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Dockerfile prüfen
+        if: steps.versions.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --check \
+            --build-arg BUILD_VERSION="${{ steps.update.outputs.app_version }}" \
+            mosquitto-official
+
+      - name: Test-Image vollständig bauen
+        if: steps.versions.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg BUILD_VERSION="${{ steps.update.outputs.app_version }}" \
+            --tag mosquitto-community-broker:test \
+            mosquitto-official
+
+      - name: Mosquitto-Version im Test-Image prüfen
+        if: steps.versions.outputs.changed == 'true'
+        env:
+          NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
+        run: |
+          set -euo pipefail
+
+          BUILT_VERSION="$(
+            docker run --rm \
+              --entrypoint mosquitto \
+              mosquitto-community-broker:test \
+              -h 2>&1 |
+            sed -nE 's/^mosquitto version ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' |
+            head -n1
+          )"
+
+          echo "Erwartete Version: ${NEW_MOSQUITTO}"
+          echo "Gebaute Version:   ${BUILT_VERSION}"
+
+          test "$BUILT_VERSION" = "$NEW_MOSQUITTO"
+
       - name: Änderungen committen und pushen
         if: steps.versions.outputs.changed == 'true'
-        shell: bash
         env:
           NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
           NEW_APP_VERSION: ${{ steps.update.outputs.app_version }}
@@ -139,7 +204,8 @@ jobs:
           set -euo pipefail
 
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add \
             mosquitto-official/Dockerfile \
@@ -148,12 +214,13 @@ jobs:
             mosquitto-official/README.md \
             mosquitto-official/DOCS.md
 
-          git commit -m "Mosquitto ${NEW_MOSQUITTO} / App ${NEW_APP_VERSION}"
-          git push
+          git commit \
+            -m "Mosquitto ${NEW_MOSQUITTO} / App ${NEW_APP_VERSION}"
 
-      - name: GitHub-Release erstellen
+          git push origin HEAD:main
+
+      - name: Git-Tag und GitHub-Release erstellen
         if: steps.versions.outputs.changed == 'true'
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_MOSQUITTO: ${{ steps.versions.outputs.latest }}
@@ -163,14 +230,29 @@ jobs:
 
           TAG="v${NEW_APP_VERSION}"
 
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag ${TAG} existiert bereits."
+            exit 1
+          fi
+
           git tag "$TAG"
           git push origin "$TAG"
 
           gh release create "$TAG" \
+            --verify-tag \
             --title "Mosquitto Community Broker ${NEW_APP_VERSION}" \
-            --notes "Automatisches Update auf Eclipse Mosquitto ${NEW_MOSQUITTO}.
+            --notes-file - <<RELEASE
+          Automatisches Update auf Eclipse Mosquitto ${NEW_MOSQUITTO}.
 
           Änderungen:
+
           - Eclipse Mosquitto ${NEW_MOSQUITTO}
           - Docker-Image eclipse-mosquitto:${NEW_MOSQUITTO}-alpine
-          - Home-Assistant-App-Version ${NEW_APP_VERSION}"
+          - Docker-Image erfolgreich gebaut und geprüft
+          - Home-Assistant-App-Version ${NEW_APP_VERSION}
+          RELEASE
+
+      - name: Kein Update vorhanden
+        if: steps.versions.outputs.changed != 'true'
+        run: |
+          echo "Es ist keine neue Eclipse-Mosquitto-Version vorhanden."
